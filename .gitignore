@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.env
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts
+uploads/
+index.faiss
+metadata.json
+
+# Hugging Face / transformers caches (optional)
+~/.cache/huggingface/
+.cache/
