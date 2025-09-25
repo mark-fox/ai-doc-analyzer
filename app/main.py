@@ -4,6 +4,7 @@ import app.embeddings as embeddings
 import openai
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from app.models import UploadResponse, QueryRequest, QueryResponse
 from app.utils import extract_pdf_chunks
 from app.embeddings import embed_and_store, load_index_and_metadata, save_index_and_metadata, search
@@ -18,6 +19,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 2) Initialize FastAPI
 app = FastAPI(title="AI Document Analyzer – PDF Uploader")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or ["http://127.0.0.1:5173"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def on_startup():
