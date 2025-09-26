@@ -178,8 +178,7 @@ async def query_docs(req: QueryRequest):
     # Top-1 context strategy
     if not context_pieces:
         return QueryResponse(answer="I don’t know.", sources=[])
-    context = context_pieces[0]
-    sources = sources[:1]
+    context = context_pieces[0] if context_pieces else ""
 
     try:
         qa_res = answer_with_qa(req.query, context)
