@@ -15,3 +15,8 @@ class QueryResponse(BaseModel):
     sources: List[Dict[str, Any]]
     confidence: Optional[float] = None
     citation: Optional[Dict[str, Any]] = None
+
+class ErrorResponse(BaseModel):
+    error: str
+    detail: Optional[str] = None
+    

@@ -7,3 +7,5 @@ pydantic==2.9.2
 python-multipart==0.0.9
 transformers==4.44.2
 torch==2.4.0
+requests>=2.31.0
+urllib3>=2.2.2
