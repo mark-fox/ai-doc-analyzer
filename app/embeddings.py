@@ -13,12 +13,31 @@ EMBED_DIM = 384
 index = faiss.IndexFlatL2(EMBED_DIM)
 
 # 3) Metadata store: list of (id → original text chunk)
-#    Here, we’ll keep it simple: a Python list where index i corresponds to vector i.
+#    a Python list where index i corresponds to vector i.
 METADATA: List[Dict[str, Any]] = []
 
 
 INDEX_PATH = "index.faiss"
 META_PATH  = "metadata.json"
+
+def clear_index(delete_files: bool = True):
+    """
+    Reset the in-memory FAISS index and metadata.
+    Optionally delete persistence files on disk.
+    """
+    global index, METADATA
+    # Recreate empty index
+    new_index = faiss.IndexFlatL2(EMBED_DIM)
+    index = new_index
+    METADATA = []
+
+    if delete_files:
+        for p in (INDEX_PATH, META_PATH):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 def embed_and_store(items: List[Dict[str, Any]]) -> None:
     """

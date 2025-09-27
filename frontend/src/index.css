@@ -116,6 +116,10 @@ body {
   white-space: pre-wrap;
   color: var(--text);    /* <-- ensures readable text in dark mode */
 }
+.snippet.mono {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 13px;
+}
 
 .btn {
   cursor: pointer;
@@ -179,4 +183,49 @@ mark.hl {
 /* remove weird bottom gaps caused by collapsed margins */
 .other-sources-wrap li:last-child {
   margin-bottom: 0;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  user-select: none;
+}
+
+.badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  margin-right: 6px;
+}
+
+/* subtle color hints per type */
+.badge.file .dot { background: #60a5fa; }   /* blue */
+.badge.page .dot { background: #34d399; }   /* green */
+.badge.chunk .dot { background: #f59e0b; }  /* amber */
+.badge.score .dot { background: #a78bfa; }  /* violet */
+
+.sectionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+.sectionbar h3 {
+  margin: 0;
 }

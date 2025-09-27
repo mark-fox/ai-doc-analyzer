@@ -9,6 +9,7 @@ class UploadResponse(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
+    source_filter: Optional[str] = None
 
 class QueryResponse(BaseModel):
     answer: str

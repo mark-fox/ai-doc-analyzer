@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import PdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+
+// Tell pdf.js to use the bundled worker
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 
 const MAX_MB = 25;
 const BYTES = (mb) => mb * 1024 * 1024;
@@ -43,13 +48,33 @@ export default function App() {
   const [uploadPct, setUploadPct] = useState(0);
   const fileInputRef = useRef(null);
 
+  const [stats, setStats] = useState({ vector_count: 0, metadata_count: 0 });
+  const indexReady = stats.vector_count > 0 && stats.metadata_count > 0;
+
+  const [clearing, setClearing] = useState(false);
+
+  const [pageCount, setPageCount] = useState(null);
+
+  const [sourcesList, setSourcesList] = useState([]);
+  const [sourceFilter, setSourceFilter] = useState("");
+
+  const [monospace, setMonospace] = useState(false);
+
+  const prettyBytes = (n) => {
+    if (!Number.isFinite(n)) return "0 B";
+    const u = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(n) / Math.log(1024));
+    return `${(n / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
+  };
+
   useEffect(() => {
-    // quick health ping
     (async () => {
       try {
         const r = await fetch(`${API_URL}/health`);
-        if (!r.ok) throw new Error(`Health check failed: ${r.status}`);
-      } catch (e) {
+        if (!r.ok) throw new Error();
+        await fetchStats(); // get initial index counts
+        await fetchSources();
+      } catch {
         setUploadStatus({
           type: "err",
           msg: `Backend not reachable at ${API_URL}. Is it running?`,
@@ -89,10 +114,12 @@ export default function App() {
     formData.append("file", file);
 
     try {
-      const { ok, data, status } = await uploadWithProgress(formData);
+      // const { ok, data, status } = await uploadWithProgress(formData);
+      const { ok, data, status } = await fallbackUpload(formData);
+
       if (!ok) {
         const msg = data?.error
-          ? `${data.error}: ${data.detail || ""}`
+          ? `${data.error}${data.detail ? `: ${data.detail}` : ""}`
           : data?.detail || `Upload failed (${status || "unknown"})`;
         setUploadStatus({ type: "err", msg });
       } else {
@@ -100,12 +127,15 @@ export default function App() {
           type: "ok",
           msg: `Uploaded ${data.filename}. Created ${data.num_chunks} chunk(s).`,
         });
+        // refresh stats so Ask enables
+        await fetchStats();
+        await fetchSources();
       }
     } catch (err) {
-      setUploadStatus({ type: "err", msg: `Network error: ${err.message}` });
+      setUploadStatus({ type: "err", msg: `Upload crashed: ${err.message}` });
     } finally {
       setLoadingUpload(false);
-      // Let the bar rest at 100% briefly, then clear
+      // Let the bar rest at 100% briefly if it reached it; then clear
       setTimeout(() => setUploadPct(0), 600);
     }
   }
@@ -116,6 +146,7 @@ export default function App() {
     setAnswer("");
     setConfidence(null);
     setSources([]);
+    setShowMoreSources(false);
 
     if (!query.trim()) {
       setQueryStatus({ type: "err", msg: "Type a question first." });
@@ -131,7 +162,11 @@ export default function App() {
       const res = await fetch(`${API_URL}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, top_k: 3 }),
+        body: JSON.stringify({
+          query,
+          top_k: 3,
+          source_filter: sourceFilter || null,
+        }),
         signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
@@ -172,28 +207,66 @@ export default function App() {
 
   async function uploadWithProgress(formData) {
     setUploadPct(0);
-    return new Promise((resolve, reject) => {
+
+    return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_URL}/upload-pdf`);
+      xhr.responseType = "text"; // we’ll parse manually for resilience
+      xhr.timeout = 30000; // 30s hard timeout
 
+      // Progress
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
+          const pct = Math.max(
+            0,
+            Math.min(100, Math.round((e.loaded / e.total) * 100))
+          );
           setUploadPct(pct);
         }
       };
-      xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText || "{}");
-          if (xhr.status >= 200 && xhr.status < 300)
-            resolve({ ok: true, data });
-          else resolve({ ok: false, data, status: xhr.status });
-        } catch (err) {
-          reject(err);
-        }
+
+      // Settle on readyState change (covers some edge cases where onload doesn’t fire)
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        settleFromXhr();
       };
-      xhr.onerror = () => reject(new Error("Network error"));
-      xhr.send(formData);
+
+      xhr.onload = settleFromXhr;
+      xhr.onerror = () =>
+        resolve({
+          ok: false,
+          status: xhr.status || 0,
+          data: { detail: "Network error" },
+        });
+      xhr.ontimeout = () =>
+        resolve({
+          ok: false,
+          status: 0,
+          data: { detail: "Upload timed out after 30s" },
+        });
+      xhr.onabort = () =>
+        resolve({ ok: false, status: 0, data: { detail: "Upload aborted" } });
+
+      function settleFromXhr() {
+        let data = {};
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+        } catch {
+          // keep data = {}
+        }
+        const ok = xhr.status >= 200 && xhr.status < 300;
+        resolve({ ok, status: xhr.status, data });
+      }
+
+      try {
+        xhr.send(formData);
+      } catch {
+        resolve({
+          ok: false,
+          status: 0,
+          data: { detail: "Failed to send request" },
+        });
+      }
     });
   }
 
@@ -212,7 +285,98 @@ export default function App() {
     e.stopPropagation();
     setDragActive(false);
     const f = e.dataTransfer?.files?.[0];
-    if (f) setFile(f);
+    if (f) {
+      setFile(f);
+      analyzePdf(f);
+    }
+  }
+
+  async function fetchStats() {
+    try {
+      const r = await fetch(`${API_URL}/stats`);
+      const j = await r.json();
+      setStats({
+        vector_count: Number(j.vector_count || 0),
+        metadata_count: Number(j.metadata_count || 0),
+      });
+    } catch {
+      setStats({ vector_count: 0, metadata_count: 0 });
+    }
+  }
+
+  async function handleClearIndex() {
+    if (!confirm("Clear all embeddings and metadata? This cannot be undone."))
+      return;
+    setClearing(true);
+    try {
+      const headers = { "Content-Type": "application/json" };
+      const admin = import.meta.env.VITE_ADMIN_TOKEN;
+      if (admin) headers["X-Admin-Token"] = admin;
+
+      const res = await fetch(`${API_URL}/admin/clear-index`, {
+        method: "POST",
+        headers,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          data?.detail || data?.error || `Clear failed (${res.status})`;
+        setUploadStatus({ type: "err", msg });
+        return;
+      }
+      // reset UI
+      setUploadStatus({ type: "ok", msg: "Index cleared." });
+      setAnswer("");
+      setConfidence(null);
+      setSources([]);
+      setQuery("");
+      await fetchStats(); // refresh counts to 0
+      await fetchSources();
+    } catch (e) {
+      setUploadStatus({ type: "err", msg: `Network error: ${e.message}` });
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function analyzePdf(f) {
+    setPageCount(null);
+    if (!f || f.type !== "application/pdf") return;
+    try {
+      const buf = await f.arrayBuffer();
+      const loadingTask = pdfjsLib.getDocument({ data: buf });
+      const pdf = await loadingTask.promise;
+      setPageCount(pdf.numPages);
+    } catch (e) {
+      console.warn("PDF analyze failed:", e);
+      // Couldn’t parse; just leave pageCount null
+      setPageCount(null);
+    }
+  }
+
+  async function fallbackUpload(formData) {
+    try {
+      const res = await fetch(`${API_URL}/upload-pdf`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    } catch (e) {
+      return {
+        ok: false,
+        status: 0,
+        data: { detail: `Network error: ${e.message}` },
+      };
+    }
+  }
+
+  async function fetchSources() {
+    try {
+      const r = await fetch(`${API_URL}/sources`);
+      const j = await r.json();
+      setSourcesList(Array.isArray(j) ? j : []);
+    } catch {}
   }
 
   return (
@@ -248,7 +412,14 @@ export default function App() {
             <p style={{ margin: 0 }}>
               {file ? (
                 <>
-                  Selected: <strong>{file.name}</strong>
+                  Selected: <strong>{file.name}</strong>{" "}
+                  <span style={{ color: "var(--muted)" }}>
+                    ({prettyBytes(file.size)}
+                    {typeof pageCount === "number"
+                      ? `, ${pageCount} page${pageCount !== 1 ? "s" : ""}`
+                      : ""}
+                    )
+                  </span>
                 </>
               ) : (
                 <>
@@ -256,11 +427,16 @@ export default function App() {
                 </>
               )}
             </p>
+
             <input
               ref={fileInputRef}
               type="file"
               accept="application/pdf"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setFile(f);
+                analyzePdf(f);
+              }}
               style={{ display: "none" }}
             />
             {uploadPct > 0 && (
@@ -302,6 +478,56 @@ export default function App() {
       {/* Query */}
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Ask a Question</h2>
+        <p
+          style={{
+            margin: "6px 0",
+            color: "var(--muted)",
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+          }}
+        >
+          <span>
+            Index: {stats.vector_count} vectors / {stats.metadata_count} chunks
+          </span>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleClearIndex}
+            disabled={
+              clearing ||
+              (stats.vector_count === 0 && stats.metadata_count === 0)
+            }
+            title="Remove all embeddings and metadata"
+          >
+            {clearing ? "Clearing…" : "Clear index"}
+          </button>
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            marginBottom: 8,
+          }}
+        >
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="btn"
+            style={{ padding: 8 }}
+            title="Filter by file"
+          >
+            <option value="">All files</option>
+            {sourcesList.map((s) => (
+              <option key={s.source} value={s.source}>
+                {s.source} ({s.count})
+              </option>
+            ))}
+          </select>
+        </div>
+
         <form onSubmit={handleQuery}>
           <input
             type="text"
@@ -313,8 +539,9 @@ export default function App() {
           <button
             type="submit"
             className="btn"
-            disabled={loadingQuery}
+            disabled={loadingQuery || !indexReady || !query.trim()}
             style={{ marginLeft: 8 }}
+            title={!indexReady ? "Upload a PDF first" : ""}
           >
             {loadingQuery ? "Searching…" : "Ask"}
           </button>
@@ -349,12 +576,41 @@ export default function App() {
 
             {topSource && (
               <>
-                <h3 style={{ marginTop: 20 }}>Source</h3>
-                <p style={{ margin: "4px 0", color: "var(--text)" }}>
-                  <strong>{topSource.source}</strong> — page {topSource.page},
-                  chunk {topSource.chunk_id}
-                </p>
-                <div className="snippet">
+                <div className="badges">
+                  <span className="badge file">
+                    <span className="dot" />
+                    {topSource.source}
+                  </span>
+                  <span className="badge page">
+                    <span className="dot" />
+                    page {topSource.page}
+                  </span>
+                  <span className="badge chunk">
+                    <span className="dot" />
+                    chunk {topSource.chunk_id}
+                  </span>
+                  {"score" in topSource &&
+                    typeof topSource.score === "number" && (
+                      <span className="badge score">
+                        <span className="dot" />
+                        score {topSource.score.toFixed(3)}
+                      </span>
+                    )}
+                </div>
+                <div className="sectionbar">
+                  <h3>Source</h3>
+                  <label style={{ fontSize: 14, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={monospace}
+                      onChange={(e) => setMonospace(e.target.checked)}
+                      style={{ marginRight: 6 }}
+                    />
+                    Monospace
+                  </label>
+                </div>
+
+                <div className={`snippet ${monospace ? "mono" : ""}`}>
                   <Highlight text={shortSourceText} match={answer || query} />
                 </div>
               </>
@@ -362,24 +618,43 @@ export default function App() {
 
             {otherSources.length > 0 && (
               <div className="other-sources-wrap" style={{ marginTop: 12 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setShowMoreSources((v) => !v)}
-                >
-                  {showMoreSources ? "Hide" : "Show"} {otherSources.length} more
-                  source{otherSources.length > 1 ? "s" : ""}
-                </button>
+                <div className="sectionbar" style={{ marginTop: 0 }}>
+                  <h3>Other sources</h3>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setShowMoreSources((v) => !v)}
+                  >
+                    {showMoreSources ? "Hide" : "Show"} {otherSources.length}{" "}
+                    more source{otherSources.length > 1 ? "s" : ""}
+                  </button>
+                </div>
 
                 {showMoreSources && (
-                  <ul style={{ marginTop: 10 }}>
+                  <ul>
                     {otherSources.map((s, i) => (
                       <li key={i} style={{ marginBottom: 10 }}>
-                        <div style={{ color: "var(--text)" }}>
-                          <strong>{s.source}</strong> — page {s.page}, chunk{" "}
-                          {s.chunk_id}
+                        <div className="badges" style={{ marginBottom: 6 }}>
+                          <span className="badge file">
+                            <span className="dot" />
+                            {s.source}
+                          </span>
+                          <span className="badge page">
+                            <span className="dot" />
+                            page {s.page}
+                          </span>
+                          <span className="badge chunk">
+                            <span className="dot" />
+                            chunk {s.chunk_id}
+                          </span>
+                          {"score" in s && typeof s.score === "number" && (
+                            <span className="badge score">
+                              <span className="dot" />
+                              score {s.score.toFixed(3)}
+                            </span>
+                          )}
                         </div>
-                        <div className="snippet" style={{ marginTop: 6 }}>
+                        <div className={`snippet ${monospace ? "mono" : ""}`}>
                           <Highlight
                             text={
                               s.text.length > 300

@@ -3,7 +3,7 @@ import shutil
 import app.embeddings as embeddings
 import openai
 import logging
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Header
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -11,7 +11,7 @@ from app.models import UploadResponse, QueryRequest, QueryResponse, ErrorRespons
 from app.utils import extract_pdf_chunks
 from app.embeddings import embed_and_store, load_index_and_metadata, save_index_and_metadata, search
 from app.qa import answer_with_qa
-from typing import List
+from typing import List, Optional
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
@@ -161,7 +161,11 @@ async def query_docs(req: QueryRequest):
             content=ErrorResponse(error="empty_index", detail="No documents indexed. Upload a PDF first.").model_dump()
         )
 
-    raw_hits = search(req.query, top_k=req.top_k)
+    raw_hits = search(req.query, top_k=max(req.top_k, 20))  # grab a few extra
+    # Optional filename filter (case-insensitive substring)
+    if req.source_filter:
+        q = req.source_filter.lower()
+        raw_hits = [(m, s) for (m, s) in raw_hits if q in (m.get("source","").lower())]
 
     sources = []
     context_pieces = []
@@ -219,3 +223,29 @@ async def stats():
         logger.exception("Stats error")
         return {"vector_count": 0, "metadata_count": 0, "note": f"error: {e}"}
 
+
+@app.post("/admin/clear-index")
+async def clear_index_route(x_admin_token: Optional[str] = Header(None)):
+    """
+    Clears the FAISS index + METADATA and deletes persistence files.
+    If you set ADMIN_TOKEN in env, this route requires header X-Admin-Token.
+    """
+    required = os.getenv("ADMIN_TOKEN")
+    if required:
+        if x_admin_token != required:
+            raise HTTPException(status_code=403, detail="Invalid admin token.")
+
+    embeddings.clear_index(delete_files=True)
+    return {
+        "message": "Index cleared.",
+        "vector_count": embeddings.index.ntotal,
+        "metadata_count": len(embeddings.METADATA),
+    }
+
+@app.get("/sources")
+async def list_sources():
+    # Unique filenames with counts
+    from collections import Counter
+    names = [m.get("source") for m in embeddings.METADATA if m.get("source")]
+    counts = Counter(names)
+    return [{"source": k, "count": v} for k, v in sorted(counts.items())]
