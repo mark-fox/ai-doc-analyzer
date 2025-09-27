@@ -39,6 +39,19 @@ Open Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
+## Screenshots
+Here is a quick look at the app in action:
+### Upload
+![Upload panel](docs/screenshots/upload_pdf.PNG)
+![PDF selected](docs/screenshots/pdf_selected.PNG)
+![Success](docs/screenshots/successful_upload.PNG)
+
+### Ask a Question
+![Ask a question](docs/screenshots/ask_question.PNG)
+
+### Answer with Sources
+![Answer and sources](docs/screenshots/answer.PNG)
+
 ## Example Usage
 
 ### Upload a PDF
